@@ -746,10 +746,10 @@ def main(
 
 if __name__ == "__main__":
   main(
-      app_name="Telegram",
-      application_output_path="Telegram/Telegram.ipa",
+      app_name="Swiftgram",
+      application_output_path="Telegram/Swiftgram.ipa",
       minimum_os="13.0",
       platform_type="ios",
-      sim_device="iPhone 16 Pro",
+      sim_device="iPhone Air",
       sim_os_version="26.0",
   )

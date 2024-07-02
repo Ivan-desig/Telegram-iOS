@@ -1,3 +1,8 @@
+// MARK: Swiftgram
+import SGSimpleSettings
+import SGSettingsUI
+import SGStrings
+import CountrySelectionUI
 import Foundation
 import UIKit
 import Display
@@ -19,9 +24,10 @@ import PeerNameColorItem
 import BoostLevelIconComponent
 
 private let enabledPublicBioEntities: EnabledEntityTypes = [.allUrl, .mention, .hashtag]
-private let enabledPrivateBioEntities: EnabledEntityTypes = [.internalUrl, .mention, .hashtag]
+private let enabledPrivateBioEntities: EnabledEntityTypes = [.allUrl, .mention, .hashtag] // MARK: Swiftgram
 
 enum InfoSection: Int, CaseIterable {
+    case swiftgram
     case groupLocation
     case calls
     case personalChannel
@@ -35,12 +41,19 @@ enum InfoSection: Int, CaseIterable {
     case botAffiliateProgram
 }
 
-func infoItems(data: PeerInfoScreenData?, context: AccountContext, presentationData: PresentationData, interaction: PeerInfoInteraction, nearbyPeerDistance: Int32?, reactionSourceMessageId: MessageId?, callMessages: [Message], chatLocation: ChatLocation, isOpenedFromChat: Bool, isMyProfile: Bool) -> [(AnyHashable, [PeerInfoScreenItem])] {
+func infoItems(nearestChatParticipant: (String?, Int32?), showProfileId: Bool, data: PeerInfoScreenData?, context: AccountContext, presentationData: PresentationData, interaction: PeerInfoInteraction, nearbyPeerDistance: Int32?, reactionSourceMessageId: MessageId?, callMessages: [Message], chatLocation: ChatLocation, isOpenedFromChat: Bool, isMyProfile: Bool) -> [(AnyHashable, [PeerInfoScreenItem])] {
     guard let data = data else {
         return []
     }
     
     var currentPeerInfoSection: InfoSection = .peerInfo
+
+    // MARK: Swiftgram
+    var sgItemId = 0
+    var idText = ""
+    var isMutualContact = false
+    //    var isUser = false
+    //    let lang = presentationData.strings.baseLanguageCode
         
     var items: [InfoSection: [PeerInfoScreenItem]] = [:]
     for section in InfoSection.allCases {
@@ -98,6 +111,11 @@ func infoItems(data: PeerInfoScreenData?, context: AccountContext, presentationD
         let ItemBotAddToChatInfo = 9003
         let ItemVerification = 9004
         
+        // MARK: Swiftgram
+        isMutualContact = user.flags.contains(.mutualContact)
+        idText = String(user.id.id._internalGetInt64Value())
+//        isUser = true
+        
         if !callMessages.isEmpty {
             items[.calls]!.append(PeerInfoScreenCallListItem(id: ItemCallList, messages: callMessages))
         }
@@ -122,7 +140,7 @@ func infoItems(data: PeerInfoScreenData?, context: AccountContext, presentationD
             }))
         }
         
-        if let phone = user.phone {
+        if let phone = user.phone, !(SGSimpleSettings.shared.hidePhoneInSettings && isMyProfile) {
             let formattedPhone = formatPhoneNumber(context: context, number: phone)
             let label: String
             if formattedPhone.hasPrefix("+888 ") {
@@ -516,6 +534,10 @@ func infoItems(data: PeerInfoScreenData?, context: AccountContext, presentationD
             }
         }
     } else if let channel = data.peer as? TelegramChannel {
+        // MARK: Swiftgram
+        idText = "-100" + String(channel.id.id._internalGetInt64Value())
+        let ItemSGRecentActions = 20
+        
         let ItemUsername = 1
         let ItemUsernameInfo = 2
         let ItemAbout = 3
@@ -681,7 +703,7 @@ func infoItems(data: PeerInfoScreenData?, context: AccountContext, presentationD
                 
                 if case .broadcast = channel.info {
                     var canEditMembers = false
-                    if channel.hasPermission(.banMembers) {
+                    if channel.adminRights != nil || channel.flags.contains(.isCreator) { // MARK: Swiftgram
                         canEditMembers = true
                     }
                     if canEditMembers {
@@ -763,6 +785,14 @@ func infoItems(data: PeerInfoScreenData?, context: AccountContext, presentationD
                     items[section]!.append(PeerInfoScreenDisclosureItem(id: ItemEdit, label: .none, text: settingsTitle, icon: UIImage(bundleImageName: "Chat/Info/SettingsIcon"), action: {
                         interaction.openEditing()
                     }))
+     
+                    // MARK: Swiftgram
+                    if channel.hasPermission(.banMembers) || channel.flags.contains(.isCreator) {
+                        items[section]!.append(PeerInfoScreenDisclosureItem(id: ItemSGRecentActions, label: .none, text: presentationData.strings.Group_Info_AdminLog, icon: UIImage(bundleImageName: "Chat/Info/RecentActionsIcon"), action: {
+                            interaction.openRecentActions()
+                        }))
+                    }
+                    //
                 }
                 
                 if channel.hasPermission(.manageDirect), let personalChannel = data.personalChannel {
@@ -782,6 +812,9 @@ func infoItems(data: PeerInfoScreenData?, context: AccountContext, presentationD
             }
         }
     } else if let group = data.peer as? TelegramGroup {
+        // MARK: Swiftgram
+        idText = String(group.id.id._internalGetInt64Value())
+         
         if let cachedData = data.cachedData as? CachedGroupData {
             let aboutText: String?
             if group.isFake {
@@ -851,6 +884,139 @@ func infoItems(data: PeerInfoScreenData?, context: AccountContext, presentationD
             }))
         }
     }
+    
+    // MARK: Swiftgram
+    if showProfileId {
+        items[.swiftgram]!.append(PeerInfoScreenLabeledValueItem(id: sgItemId, label: "id: \(idText)", text: "", textColor: .primary, action: nil, longTapAction: { sourceNode in
+            interaction.openPeerInfoContextMenu(.copy(idText), sourceNode, nil)
+        }, requestLayout: { _ in
+            interaction.requestLayout(false)
+        }))
+        sgItemId += 1
+    }
+    
+    if SGSimpleSettings.shared.showDC {
+        var dcId: Int? = nil
+//        var dcLocation: String = ""
+        var phoneCountryText = ""
+        
+        var dcLabel = ""
+        var dcText: String = ""
+        
+        if let cachedData = data.cachedData as? CachedUserData, let phoneCountry = cachedData.peerStatusSettings?.phoneCountry {
+            var countryName = ""
+            let countriesConfiguration = context.currentCountriesConfiguration.with { $0 }
+            if let country = countriesConfiguration.countries.first(where: { $0.id == phoneCountry }) {
+                countryName = country.localizedName ?? country.name
+            } else if phoneCountry == "FT" {
+                countryName = presentationData.strings.Chat_NonContactUser_AnonymousNumber
+            } else if phoneCountry == "TS" {
+                countryName = "Test"
+            }
+            phoneCountryText = emojiFlagForISOCountryCode(phoneCountry) + " " + countryName
+        }
+        if let peer = data.peer, let smallProfileImage = peer.smallProfileImage, let cloudResource = smallProfileImage.resource as? CloudPeerPhotoSizeMediaResource {
+            dcId = cloudResource.datacenterId
+            
+//            switch (dcId) {
+//                case 1:
+//                    dcLocation = "Miami"
+//                case 2:
+//                    dcLocation = "Amsterdam"
+//                case 3:
+//                    dcLocation = "Miami"
+//                case 4:
+//                    dcLocation = "Amsterdam"
+//                case 5:
+//                    dcLocation = "Singapore"
+//                default:
+//                    break
+//            }
+        }
+        
+        if let dcId = dcId {
+            dcLabel = "dc: \(dcId)"
+            if phoneCountryText.isEmpty {
+//                if !dcLocation.isEmpty {
+//                    dcLabel += " \(dcLocation)"
+//                }
+            } else {
+                dcText = "\(phoneCountryText)"
+            }
+        } else if !phoneCountryText.isEmpty {
+            dcLabel = "dc: ?"
+            dcText = phoneCountryText
+        }
+
+        if !dcText.isEmpty || !dcLabel.isEmpty {
+            items[.swiftgram]!.append(PeerInfoScreenLabeledValueItem(id: sgItemId, label: dcLabel, text: dcText, textColor: .primary, action: nil, longTapAction: { sourceNode in
+                interaction.openPeerInfoContextMenu(.aboutDC, sourceNode, nil)
+            }, requestLayout: { _ in
+                interaction.requestLayout(false)
+            }))
+            sgItemId += 1
+        }
+    }
+    
+    if SGSimpleSettings.shared.showCreationDate {
+        if let channelCreationTimestamp = data.channelCreationTimestamp {
+            let creationDateString = stringForDate(timestamp: channelCreationTimestamp, strings: presentationData.strings)
+            items[.swiftgram]!.append(PeerInfoScreenLabeledValueItem(id: sgItemId, label: i18n("Chat.Created", presentationData.strings.baseLanguageCode, creationDateString), text: "", action: nil, longTapAction: { sourceNode in
+                interaction.openPeerInfoContextMenu(.copy(creationDateString), sourceNode, nil)
+            }, requestLayout: { _ in
+                interaction.requestLayout(false)
+            }))
+            sgItemId += 1
+        }
+    }
+    
+    if let invitedAt = nearestChatParticipant.1 {
+        let joinedDateString = stringForDate(timestamp: invitedAt, strings: presentationData.strings)
+        items[.swiftgram]!.append(PeerInfoScreenLabeledValueItem(id: sgItemId, label: i18n("Chat.JoinedDateTitle", presentationData.strings.baseLanguageCode, nearestChatParticipant.0 ?? "chat") , text: joinedDateString, action: nil, longTapAction: { sourceNode in
+            interaction.openPeerInfoContextMenu(.copy(joinedDateString), sourceNode, nil)
+        }, requestLayout: { _ in
+            interaction.requestLayout(false)
+        }))
+        sgItemId += 1
+    }
+    
+    if SGSimpleSettings.shared.showRegDate {
+        var regDateString = ""
+        if let cachedData = data.cachedData as? CachedUserData, let registrationDate = cachedData.peerStatusSettings?.registrationDate {
+            let components = registrationDate.components(separatedBy: ".")
+            if components.count == 2, let first = Int32(components[0]), let second = Int32(components[1]) {
+                let month = first - 1
+                let year = second - 1900
+                regDateString = stringForMonth(strings: presentationData.strings, month: month, ofYear: year)
+            }
+        }
+        if let regDate = data.regDate, regDateString.isEmpty {
+            let regTimestamp = Int32((regDate.from + regDate.to) / 2)
+            switch (context.currentAppConfiguration.with { $0 }.sgWebSettings.global.regdateFormat) {
+                case "year":
+                    regDateString = stringForDateWithoutDayAndMonth(date: Date(timeIntervalSince1970: Double(regTimestamp)), strings: presentationData.strings)
+                case "month":
+                    regDateString = stringForDateWithoutDay(date: Date(timeIntervalSince1970: Double(regTimestamp)), strings: presentationData.strings)
+                default:
+                    regDateString = stringForDate(timestamp: regTimestamp, strings: presentationData.strings)
+            }
+        }
+        if !regDateString.isEmpty {
+            items[.swiftgram]!.append(PeerInfoScreenLabeledValueItem(id: sgItemId, label: i18n("Chat.RegDate", presentationData.strings.baseLanguageCode), text: regDateString, action: nil, longTapAction: { sourceNode in
+                interaction.openPeerInfoContextMenu(.copy(regDateString), sourceNode, nil)
+            }, requestLayout: { _ in
+                interaction.requestLayout(false)
+            }))
+            sgItemId += 1
+        }
+    }
+    if isMutualContact {
+        items[.swiftgram]!.append(PeerInfoScreenLabeledValueItem(id: sgItemId, label: i18n("MutualContact.Label", presentationData.strings.baseLanguageCode), text: "", action: nil, longTapAction: { _ in }, requestLayout: { _ in
+            interaction.requestLayout(false)
+        }))
+        sgItemId += 1
+    }
+    
     
     var result: [(AnyHashable, [PeerInfoScreenItem])] = []
     for section in InfoSection.allCases {
@@ -1226,7 +1392,7 @@ func editingItems(data: PeerInfoScreenData?, boostStatus: ChannelBoostStatus?, s
                 }
                 
                 var canEditMembers = false
-                if channel.hasPermission(.banMembers) && (channel.adminRights != nil || channel.flags.contains(.isCreator)) {
+                if /*channel.hasPermission(.banMembers) &&*/ (channel.adminRights != nil || channel.flags.contains(.isCreator)) { // MARK: Swiftgram
                     canEditMembers = true
                 }
                 if canEditMembers {

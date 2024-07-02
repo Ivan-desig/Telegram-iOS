@@ -23,4 +23,8 @@
         }
     },
     "swift.sourcekit-lsp.serverPath": "${workspaceFolder}/build-input/sourcekit-lsp",
+
+
+    /* MARK: Swiftgram */
+    "editor.wordWrap": "on"
 }

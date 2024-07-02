@@ -24,6 +24,30 @@
             "internalConsoleOptions": "openOnSessionStart",
             "timeout": 1000
         },
+        {
+            "name": "Debug Swiftgram",
+            "type": "lldb-dap",
+            "request": "attach",
+            "preLaunchTask": "_launch_swiftgram",
+            "debuggerRoot": "${workspaceFolder}",
+            "attachCommands": [
+                "process connect connect://localhost:6667"
+            ],
+            "internalConsoleOptions": "openOnSessionStart",
+            "timeout": 1000
+        },
+        {
+            "name": "Restart Debug Swiftgram",
+            "type": "lldb-dap",
+            "request": "attach",
+            "preLaunchTask": "Restart Swiftgram Debug",
+            "debuggerRoot": "${workspaceFolder}",
+            "attachCommands": [
+                "process connect connect://localhost:6667"
+            ],
+            "internalConsoleOptions": "openOnSessionStart",
+            "timeout": 1000
+        }
     ],
     "options": {
         "console": "integratedTerminal",
