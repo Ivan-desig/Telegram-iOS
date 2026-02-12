@@ -1,4 +1,4 @@
-name: Build Swiftgram Pro Mod
+name: Build Swiftgram God Mode
 on:
   workflow_dispatch:
 
@@ -11,24 +11,26 @@ jobs:
           submodules: 'recursive'
           fetch-depth: 1
 
-      - name: Inject Features
-        run: bash full_mod_patch.sh # Применяем наш патч
+      - name: Apply All Features
+        run: bash full_mod_patch.sh
 
       - name: Setup Signing
         run: |
-          # ВСТАВЬ СЮДА СВОЙ БЛОК ИМПОРТА СЕРТИФИКАТА (p12 и профиль)
-          # Используй тот код, который мы настраивали для ключей.
+          # Вставь сюда свой блок импорта сертификата (p12 и provision)
+          # Если его нет, билд упадет на следующем шаге
 
       - name: Build IPA
         run: |
+          # Добавляем параметр --buildNumber, который требовал скрипт на скрине
           python3 build-system/Make/Make.py \
             --overrideXcodeVersion \
             build \
+            --buildNumber=1 \
             --configuration=release_arm64 \
             --codesigningInformationPath=build-system/fake-codesigning
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Swiftgram-Ultimate-Pro
+          name: Swiftgram-Ultimate-Mod
           path: build/artifacts/*.ipa
