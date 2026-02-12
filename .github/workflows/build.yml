@@ -16,21 +16,21 @@ jobs:
 
       - name: Setup Signing
         run: |
-          # Вставь сюда свой блок импорта сертификата (p12 и provision)
-          # Если его нет, билд упадет на следующем шаге
+          # Вставь сюда свой код импорта сертификатов p12 и профиля
+          # Без них IPA не соберется!
 
       - name: Build IPA
         run: |
-          # Добавляем параметр --buildNumber, который требовал скрипт на скрине
           python3 build-system/Make/Make.py \
             --overrideXcodeVersion \
             build \
             --buildNumber=1 \
+            --configurationPath=build-system/appstore-configuration.json \
             --configuration=release_arm64 \
             --codesigningInformationPath=build-system/fake-codesigning
 
-      - name: Upload
+      - name: Upload result
         uses: actions/upload-artifact@v4
         with:
-          name: Swiftgram-Ultimate-Mod
+          name: Swiftgram-Pro-Full
           path: build/artifacts/*.ipa
