@@ -1,0 +1,189 @@
+name: Build AyuGram iOS
+
+on:
+  workflow_dispatch:            # Ручной запуск
+  push:
+    branches: [ main ]
+    paths:
+      - 'AyuGram/**'
+      - 'patches/**'
+      - 'apply_patches.py'
+
+env:
+  # Версия Xcode — должна совпадать с versions.json в Telegram-iOS
+  # Проверь актуальную версию в репо: cat versions.json
+  XCODE_VERSION: "16.3"
+
+jobs:
+  build:
+    name: Build IPA
+    runs-on: macos-15          # macOS 15 Sequoia (Apple Silicon)
+    timeout-minutes: 180       # 3 часа — Telegram собирается долго
+
+    steps:
+      # ─── 1. Checkout нашего репо с патчами ───────────────────────────────
+      - name: Checkout AyuGram patches
+        uses: actions/checkout@v4
+        with:
+          path: ayu-patches
+
+      # ─── 2. Клонируем Telegram-iOS (только нужная глубина) ───────────────
+      - name: Clone Telegram-iOS
+        run: |
+          git clone --recurse-submodules --depth=1 \
+            https://github.com/TelegramMessenger/Telegram-iOS.git \
+            telegram-ios
+          echo "✅ Telegram-iOS клонирован"
+
+      # ─── 3. Читаем нужную версию Xcode из versions.json ─────────────────
+      - name: Detect Xcode version
+        id: xcode_ver
+        run: |
+          VER=$(python3 -c "
+          import json, sys
+          with open('telegram-ios/versions.json') as f:
+              d = json.load(f)
+          print(d.get('xcode', '${{ env.XCODE_VERSION }}'))
+          " 2>/dev/null || echo "${{ env.XCODE_VERSION }}")
+          echo "version=$VER" >> $GITHUB_OUTPUT
+          echo "Xcode version: $VER"
+
+      # ─── 4. Устанавливаем нужный Xcode ───────────────────────────────────
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ steps.xcode_ver.outputs.version }}
+
+      # ─── 5. Кэш Bazel (ускоряет повторные билды В РАЗЫ) ──────────────────
+      - name: Cache Bazel
+        uses: actions/cache@v4
+        with:
+          path: ~/telegram-bazel-cache
+          key: bazel-${{ runner.os }}-${{ hashFiles('telegram-ios/WORKSPACE', 'telegram-ios/versions.json') }}
+          restore-keys: |
+            bazel-${{ runner.os }}-
+
+      # ─── 6. Применяем наши патчи ─────────────────────────────────────────
+      - name: Apply AyuGram patches
+        run: |
+          cp -r ayu-patches/AyuGram telegram-ios/Telegram/Telegram-iOS/
+          python3 ayu-patches/apply_patches.py telegram-ios
+          echo "✅ Патчи применены"
+
+      # ─── 7. Настраиваем конфигурацию билда ───────────────────────────────
+      - name: Setup build configuration
+        run: |
+          cd telegram-ios
+          
+          # Используем minimal development config (не требует реальных профилей)
+          cp build-system/template_minimal_development_configuration.json build-configuration.json
+          
+          # Можно задать bundle ID через секреты GitHub
+          if [ -n "${{ secrets.BUNDLE_ID }}" ]; then
+            python3 -c "
+          import json
+          with open('build-configuration.json') as f:
+              cfg = json.load(f)
+          cfg['bundleId'] = '${{ secrets.BUNDLE_ID }}'
+          with open('build-configuration.json', 'w') as f:
+              json.dump(cfg, f, indent=2)
+            "
+          fi
+          
+          echo "Конфигурация:"
+          cat build-configuration.json
+
+      # ─── 8. Генерируем Xcode проект ──────────────────────────────────────
+      - name: Generate Xcode project
+        run: |
+          cd telegram-ios
+          python3 build-system/Make/Make.py \
+            --cacheDir="$HOME/telegram-bazel-cache" \
+            generateProject \
+            --configurationPath=build-configuration.json \
+            --xcodeManagedCodesigning
+
+      # ─── 9. Билдим ───────────────────────────────────────────────────────
+      - name: Build Telegram.app
+        run: |
+          cd telegram-ios
+          python3 build-system/Make/Make.py \
+            --cacheDir="$HOME/telegram-bazel-cache" \
+            build \
+            --configurationPath=build-configuration.json \
+            --xcodeManagedCodesigning \
+            -- \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER=""
+
+      # ─── 10. Пакуем .app в .ipa ──────────────────────────────────────────
+      - name: Package IPA
+        run: |
+          set -e
+          
+          # Ищем .app в build output
+          APP_PATH=$(find telegram-ios -name "Telegram.app" -type d 2>/dev/null | head -1)
+          
+          if [ -z "$APP_PATH" ]; then
+            # Попробуем стандартный путь Bazel
+            APP_PATH=$(find ~/telegram-bazel-cache -name "Telegram.app" -type d 2>/dev/null | head -1)
+          fi
+          
+          echo "Найдено .app: $APP_PATH"
+          
+          # Создаём IPA структуру
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/Telegram.app
+          
+          # Убираем ненужные signature файлы (ESign перепишет)
+          rm -rf Payload/Telegram.app/_CodeSignature || true
+          
+          # Пакуем
+          zip -r AyuGram-unsigned.ipa Payload
+          
+          echo "✅ IPA создан: $(du -sh AyuGram-unsigned.ipa | cut -f1)"
+
+      # ─── 11. Загружаем артефакт ───────────────────────────────────────────
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AyuGram-unsigned-${{ github.run_number }}
+          path: AyuGram-unsigned.ipa
+          retention-days: 7        # Хранится 7 дней
+
+      # ─── 12. (Опционально) Подпись через сертификат из секретов ─────────
+      # Раскомментируй если хочешь получить уже подписанный IPA
+      # Требует: secrets.P12_BASE64, secrets.P12_PASSWORD, secrets.MOBILEPROVISION_BASE64
+      #
+      # - name: Sign IPA
+      #   if: ${{ secrets.P12_BASE64 != '' }}
+      #   run: |
+      #     # Декодируем сертификат
+      #     echo "${{ secrets.P12_BASE64 }}" | base64 -d > cert.p12
+      #     echo "${{ secrets.MOBILEPROVISION_BASE64 }}" | base64 -d > profile.mobileprovision
+      #     
+      #     # Устанавливаем в keychain
+      #     security create-keychain -p "temp" build.keychain
+      #     security import cert.p12 -k build.keychain -P "${{ secrets.P12_PASSWORD }}" -A
+      #     security set-key-partition-list -S apple-tool:,apple: -s -k "temp" build.keychain
+      #     security list-keychains -d user -s build.keychain
+      #     
+      #     # Подписываем
+      #     IDENTITY=$(security find-identity -p codesigning -v build.keychain | head -1 | sed 's/.*"\(.*\)"/\1/')
+      #     
+      #     unzip -o AyuGram-unsigned.ipa -d signed_tmp
+      #     cp profile.mobileprovision "signed_tmp/Payload/Telegram.app/embedded.mobileprovision"
+      #     codesign --force --sign "$IDENTITY" --entitlements entitlements.plist \
+      #       "signed_tmp/Payload/Telegram.app"
+      #     
+      #     cd signed_tmp && zip -r ../AyuGram-signed.ipa Payload
+      #   
+      # - name: Upload signed IPA
+      #   if: ${{ secrets.P12_BASE64 != '' }}
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: AyuGram-signed-${{ github.run_number }}
+      #     path: AyuGram-signed.ipa
