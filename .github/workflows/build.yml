@@ -3,99 +3,81 @@ name: Build AyuGram iOS
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ master ]
 
 jobs:
   build:
     name: Build IPA
-    runs-on: macos-15
+    runs-on: macos-13
     timeout-minutes: 180
 
     steps:
-      - name: Checkout AyuGram patches
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v2
         with:
-          path: ayu-patches
+          submodules: 'recursive'
+          fetch-depth: '0'
 
-      - name: Clone Telegram-iOS
+      - name: Set active Xcode path
         run: |
-          git clone --recurse-submodules --depth=1 \
-            https://github.com/TelegramMessenger/Telegram-iOS.git \
-            telegram-ios
+          XCODE_VERSION=$(cat versions.json | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["xcode"]);')
+          sudo xcode-select -s /Applications/Xcode_$XCODE_VERSION.app/Contents/Developer
+          echo "Using Xcode: $XCODE_VERSION"
 
-      - name: Select Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: '26.2'
-
-      - name: Cache Bazel
-        uses: actions/cache@v4
-        with:
-          path: ~/telegram-bazel-cache
-          key: bazel-${{ runner.os }}-${{ hashFiles('telegram-ios/WORKSPACE') }}
-          restore-keys: |
-            bazel-${{ runner.os }}-
+      - name: Create canonical source directory
+        run: |
+          set -x
+          sudo mkdir -p /Users/Shared
+          cp -R $GITHUB_WORKSPACE /Users/Shared/
+          mv /Users/Shared/$(basename $GITHUB_WORKSPACE) /Users/Shared/telegram-ios
 
       - name: Apply AyuGram patches
         run: |
-          cp -r ayu-patches/AyuGram telegram-ios/Telegram/Telegram-iOS/
-          python3 ayu-patches/apply_patches.py telegram-ios
+          cd /Users/Shared/telegram-ios
+          if [ -f "apply_patches.py" ]; then
+            python3 apply_patches.py /Users/Shared/telegram-ios
+          fi
+          echo "Patches applied"
 
-      - name: Setup build configuration
+      - name: Build the App
         run: |
-          cd telegram-ios
-          cat > build-configuration.json << 'EOF'
-          {
-            "bundleId": "org.ayugram.telegram",
-            "developmentTeam": "AYUGRAMTEAM1",
-            "baseAppBundleId": "org.ayugram.telegram",
-            "appGroupId": "group.org.ayugram.telegram",
-            "keychainGroup": "org.ayugram.telegram",
-            "appStoreId": "686449807",
-            "provisioningProfileSpecifier_main": "",
-            "provisioningProfileSpecifier_widget": "",
-            "provisioningProfileSpecifier_notificationservice": "",
-            "provisioningProfileSpecifier_intents": "",
-            "provisioningProfileSpecifier_intentsui": "",
-            "provisioningProfileSpecifier_watch": "",
-            "provisioningProfileSpecifier_watchwidget": "",
-            "provisioningProfileSpecifier_notificationcontent": "",
-            "provisioningProfileSpecifier_share": ""
-          }
-          EOF
-          cat build-configuration.json
+          set -x
 
-      - name: Generate Xcode project
-        run: |
-          cd telegram-ios
-          python3 build-system/Make/Make.py \
-            --cacheDir="$HOME/telegram-bazel-cache" \
-            generateProject \
-            --configurationPath=build-configuration.json \
-            --xcodeManagedCodesigning
+          SOURCE_DIR=/Users/Shared/telegram-ios
+          BAZEL_USER_ROOT="/private/var/tmp/_bazel_containerhost"
 
-      - name: Build Telegram.app
-        run: |
-          cd telegram-ios
-          python3 build-system/Make/Make.py \
-            --cacheDir="$HOME/telegram-bazel-cache" \
+          cd $SOURCE_DIR
+
+          BUILD_NUMBER_OFFSET="$(cat build_number_offset)"
+          export APP_VERSION=$(cat versions.json | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["app"]);')
+          export COMMIT_COUNT=$(git rev-list --count HEAD)
+          export COMMIT_COUNT="$(($COMMIT_COUNT+$BUILD_NUMBER_OFFSET))"
+          export BUILD_NUMBER="$COMMIT_COUNT"
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_ENV
+          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
+
+          python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
+
+          python3 -u build-system/Make/Make.py \
+            --bazelUserRoot="$BAZEL_USER_ROOT" \
             build \
-            --configurationPath=build-configuration.json \
-            --xcodeManagedCodesigning
+            --configurationPath="build-system/appstore-configuration.json" \
+            --codesigningInformationPath=build-system/fake-codesigning \
+            --configuration=release_arm64 \
+            --buildNumber="$BUILD_NUMBER"
 
-      - name: Package IPA
-        run: |
-          APP_PATH=$(find . -name "Telegram.app" -type d 2>/dev/null | head -1)
-          echo "App path: $APP_PATH"
-          mkdir -p Payload
-          cp -r "$APP_PATH" Payload/Telegram.app
-          rm -rf Payload/Telegram.app/_CodeSignature || true
-          zip -r AyuGram-unsigned.ipa Payload
-          echo "IPA size: $(du -sh AyuGram-unsigned.ipa)"
+          OUTPUT_PATH="build/artifacts"
+          rm -rf "$OUTPUT_PATH"
+          mkdir -p "$OUTPUT_PATH"
+          for f in bazel-out/applebin_ios-ios_arm*-opt-ST-*/bin/Telegram/Telegram.ipa; do
+            cp "$f" $OUTPUT_PATH/Telegram.ipa
+          done
+
+          echo "IPA size: $(du -sh $OUTPUT_PATH/Telegram.ipa)"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: AyuGram-unsigned-${{ github.run_number }}
-          path: AyuGram-unsigned.ipa
+          name: AyuGram-${{ env.APP_VERSION }}-${{ github.run_number }}
+          path: /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa
           retention-days: 7
